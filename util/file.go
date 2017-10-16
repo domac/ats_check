@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -20,6 +21,17 @@ const (
 //------------------------------
 //some tool for handling file
 //------------------------------
+
+func BackupFile(file string) string {
+	if !FileExists(file) {
+		return ""
+	}
+	backup_time := time.Now().Format("2006-01-02_15-04-05")
+	targetFile := fmt.Sprintf("%s_%s", file, backup_time)
+	cmd := fmt.Sprintf("mv %s %s", file, targetFile)
+	ShellRun(cmd)
+	return targetFile
+}
 
 func CheckDataFileExist(filePath string) error {
 

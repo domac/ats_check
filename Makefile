@@ -20,7 +20,14 @@ format:
 	gofmt -w .
 
 build:
+	rm -rf releases/$(TARGETNAME).tar.gz
 	mkdir -p releases
+	cp atscheck.sh releases/atscheck.sh
+	cp -r config releases/
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -v -o releases/$(TARGETNAME) $(BUILDFILE)
+	cp releases/$(TARGETNAME) .
+	tar -cf releases/$(TARGETNAME).tar.gz releases/atscheck.sh releases/config releases/$(TARGETNAME)
+	rm -rf releases/atscheck.sh releases/config releases/$(TARGETNAME)
+	cp releases/$(TARGETNAME).tar.gz ~/Downloads/
 clean:
 	go clean -i

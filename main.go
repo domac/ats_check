@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	port           = flag.String("port", "10200", "server port")
-	log_path       = flag.String("log", "/apps/logs/ats_check/ats_check.log", "log path")
-	ats_config_dir = flag.String("config_dir", "/apps/conf/trafficserver", "ats config files dir")
+	port     = flag.String("port", "10200", "server port")
+	log_path = flag.String("log", "/apps/logs/ats_check/ats_check.log", "log path")
+	config   = flag.String("config", "./config/base.conf", "set the config file path")
 )
 
 //prof command:
@@ -22,7 +22,15 @@ func main() {
 	println(app.Version)
 	flag.Parse()
 
-	if err := app.Startup(*ats_config_dir, *log_path); err != nil {
+	cfg, err := app.LoadConfig(*config)
+	if err != nil {
+		l.Fatal(err)
+		return
+	}
+
+	application := app.NewApp(cfg, *log_path)
+
+	if err := application.Startup(); err != nil {
 		l.Fatal(err)
 		return
 	}
@@ -43,7 +51,7 @@ func main() {
 	}()
 
 	//注册退出事件
-	app.On(app.EXIT, app.Shutdown)
+	app.On(app.EXIT, application.Shutdown)
 	app.Wait()
 	app.Emit(app.EXIT, nil)
 	log.GetLogger().Infoln("ats_check is exit now !")
