@@ -1,0 +1,69 @@
+{
+	"ImportPath": "github.com/domac/ats_check",
+	"GoVersion": "go1.9",
+	"GodepVersion": "v79",
+	"Deps": [
+		{
+			"ImportPath": "github.com/BurntSushi/toml",
+			"Comment": "v0.2.0-21-g9906417",
+			"Rev": "99064174e013895bbd9b025c31100bd1d9b590ca"
+		},
+		{
+			"ImportPath": "github.com/Sirupsen/logrus",
+			"Comment": "v1.0.3",
+			"Rev": "f006c2ac4710855cf0f916dd6b77acf6b048dc6e"
+		},
+		{
+			"ImportPath": "github.com/gorilla/mux",
+			"Comment": "v1.4.0-16-g24fca30",
+			"Rev": "24fca303ac6da784b9e8269f724ddeb0b2eea5e7"
+		},
+		{
+			"ImportPath": "github.com/klauspost/compress/flate",
+			"Comment": "v1.2.1-8-gf3dce52",
+			"Rev": "f3dce52e0576655d55fd69e74b63da96ad1108f3"
+		},
+		{
+			"ImportPath": "github.com/klauspost/compress/gzip",
+			"Comment": "v1.2.1-8-gf3dce52",
+			"Rev": "f3dce52e0576655d55fd69e74b63da96ad1108f3"
+		},
+		{
+			"ImportPath": "github.com/klauspost/compress/zlib",
+			"Comment": "v1.2.1-8-gf3dce52",
+			"Rev": "f3dce52e0576655d55fd69e74b63da96ad1108f3"
+		},
+		{
+			"ImportPath": "github.com/klauspost/cpuid",
+			"Comment": "v1.1",
+			"Rev": "ae7887de9fa5d2db4eaa8174a7eff2c1ac00f2da"
+		},
+		{
+			"ImportPath": "github.com/valyala/bytebufferpool",
+			"Rev": "e746df99fe4a3986f4d4f79e13c1e0117ce9c2f7"
+		},
+		{
+			"ImportPath": "github.com/valyala/fasthttp",
+			"Comment": "v20160617-76-gef299a9",
+			"Rev": "ef299a95e2a898859c8652374b33cc7553b1532e"
+		},
+		{
+			"ImportPath": "github.com/valyala/fasthttp/fasthttputil",
+			"Comment": "v20160617-76-gef299a9",
+			"Rev": "ef299a95e2a898859c8652374b33cc7553b1532e"
+		},
+		{
+			"ImportPath": "github.com/valyala/fasthttp/stackless",
+			"Comment": "v20160617-76-gef299a9",
+			"Rev": "ef299a95e2a898859c8652374b33cc7553b1532e"
+		},
+		{
+			"ImportPath": "golang.org/x/crypto/ssh/terminal",
+			"Rev": "558b6879de74bc843225cde5686419267ff707ca"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/unix",
+			"Rev": "9f7170bcd8e9f4d3691c06401119c46a769a1e03"
+		}
+	]
+}

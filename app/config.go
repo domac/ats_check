@@ -8,16 +8,20 @@ import (
 )
 
 type AppConfig struct {
-	Parents               []string
-	Parents_config_path   string
-	Remap_config_path     string
-	Health_check          string
-	Retry                 int
-	Retry_sleep_ms        int
-	Check_duration_second int
-	filepath              string
+	Parents                  []string
+	Parents_config_path      string
+	Remap_config_path        string
+	Records_config_path      string
+	Health_check             string
+	Retry                    int
+	Retry_sleep_ms           int
+	Check_duration_second    int
+	filepath                 string
+	Setup_records_config_cmd string
+	Setup_parent_config_cmd  string
 }
 
+//载入配置文件
 func LoadConfig(fp string) (*AppConfig, error) {
 	if fp == "" {
 		return nil, errors.New("the config file dir is empty")

@@ -2,11 +2,12 @@ package web
 
 import (
 	"github.com/gorilla/mux"
+	"github.com/domac/ats_check/app"
 )
 
-//load router table
-func loadRouter() (r *mux.Router, err error) {
-	atsHandler := &ATSHandler{}
+//加载路由
+func loadRouter(applicationContext *app.App) (r *mux.Router, err error) {
+	atsHandler := &ATSHandler{applicationContext: applicationContext}
 	r = mux.NewRouter()
 	v1Subrouter := r.PathPrefix("/ats").Subrouter()
 	ih := NewATSHandler(atsHandler.Parents)

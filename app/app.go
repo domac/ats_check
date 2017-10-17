@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"github.com/domac/ats_check/log"
 	"github.com/domac/ats_check/util"
-	"io/ioutil"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,20 +12,22 @@ import (
 	"time"
 )
 
-var started bool
+//服务器down掉异常
+var ErrServerDown = errors.New("parent server down")
 
-var ErrServerDown = errors.New("server down")
-
-var CURRENT_PARENTS = map[string]string{}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
+//上层节点结构
+type ParentServer struct {
+	Host     string
+	Working  bool
+	MarkDown bool
 }
 
 type App struct {
 	exitChan chan int
 	cfg      *AppConfig
+	parents  map[string]*ParentServer
 	sync.Mutex
+	parentIsProxy bool
 }
 
 //创建后台进程对象
@@ -38,49 +38,46 @@ func NewApp(cfg *AppConfig, log_path string) *App {
 	//初始化日志
 	log.LogInit(log_path, "info")
 	a := &App{
-		cfg:      cfg,
-		exitChan: make(chan int),
+		cfg:           cfg,
+		exitChan:      make(chan int),
+		parents:       make(map[string]*ParentServer),
+		parentIsProxy: true,
 	}
 	return a
 }
 
-func (self *App) GetConfig() *AppConfig {
-	return self.cfg
-}
-
 //应用启动
-func (self *App) Startup() (err error) {
-	log.GetLogger().Infoln("服务初始化")
-	//上层节点检测
-	self.parents_check()
-	return
-}
-
 //上层节点检测
-func (self *App) parents_check() {
+func (self *App) Startup() (err error) {
+
+	log.GetLogger().Infoln("服务初始化")
 
 	parent_config := self.cfg.Parents_config_path
 	parents := self.cfg.Parents
 
-	log.GetLogger().Infof("parent config path:%s", parent_config)
+	log.GetLogger().Infof("上层节点的ATS配置文件:%s", parent_config)
 
-	//父节点信息不存在
+	//父节点信息不存在, 则退出
 	if len(parents) == 0 {
-		log.GetLogger().Errorln("parents not exists!")
+		log.GetLogger().Errorln("上层结构不存在，请检查配置文件是否填写!")
 		self.Shutdown(nil)
 		os.Exit(2)
 	}
-
 	for _, phost := range parents {
-		go self.single_parent_check(phost)
+		go self.parentHealthCheck(phost)
 	}
+	return
 }
 
-func (self *App) single_parent_check(phost string) {
+//上层节点健康检查
+func (self *App) parentHealthCheck(phost string) {
+
+	//初始化上层节点状态
+	self.updateParent(phost, true)
+
 	health_check_url := self.cfg.Health_check
 	health_check_url = strings.Replace(health_check_url, "{parent}", phost, 1)
-	log.GetLogger().Infof("parent check url: %s", health_check_url)
-	CURRENT_PARENTS[phost] = health_check_url
+	log.GetLogger().Infof("上层节点健康检查URL: %s", health_check_url)
 	//调度定时器
 	ticker := time.Tick(time.Duration(self.cfg.Check_duration_second) * time.Second)
 
@@ -88,122 +85,231 @@ func (self *App) single_parent_check(phost string) {
 	for {
 		select {
 		case <-ticker:
+
+			if httpclient == nil {
+				log.GetLogger().Infoln("重建httpclient")
+				httpclient = util.NewFastHttpClient(500 * time.Millisecond)
+			}
+
 			//主体测试功能
-			log.GetLogger().Infof("parent check now -> %s", phost)
-			err := retry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond, func() error {
+			log.GetLogger().Infof("定时健康监测 -> %s", phost)
+			err := httpRetry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond, func() error {
 				statusCode, body, err := httpclient.Get(nil, health_check_url)
-				//statusCode, body, err := httpclient.Get(nil, "http://localhost:10200/ats")
-				body = body[:0]
+				body = body[:0] //清空body
 				if err != nil {
 					return err
 				}
-				//5xx 错误
+				//出现 5xx 错误
 				if statusCode >= 500 {
 					return ErrServerDown
 				}
 				return nil
 			})
 
-			//重试完成后校验
-			if err != nil {
-				self.failover(phost)
-				goto exit
-			}
+			self.updateParent(phost, err == nil)
+
+			//故障恢复
+			self.failover(phost)
+
 		case <-self.exitChan:
 			goto exit
 		}
 	}
 exit:
-	log.GetLogger().Infof("%s check exit", phost)
+	log.GetLogger().Infof("%s 健康监测功能退出", phost)
 	return
 }
 
+//故障处理
 func (self *App) failover(phost string) {
-	//数次重试失败,当前检测退出
-	self.Lock()
-	self.checkFailCallBack(phost)
-	self.Unlock()
+	if parentServer, ok := self.parents[phost]; ok {
+		if parentServer.MarkDown && parentServer.Working {
+			//服务恢复正常的情况
+			self.backwardRecover(parentServer)
+		} else if !parentServer.MarkDown && !parentServer.Working {
+			//服务出现不可用的情况
+			self.forwardRecover(parentServer)
+		}
 
-	//全部PARENTS已被清除的情况
-	if len(CURRENT_PARENTS) == 0 {
-		self.recoverRemap()
+		// if !parentServer.Working {
+		// 	self.forwardRecover(parentServer)
+		// } else {
+		// 	self.parentIsProxy = true
+		// 	parentServer.MarkDown = false
+		// }
 	}
-	//重新加载
-	reload()
-	log.GetLogger().Printf("%s failover done", phost)
 }
 
-func (self *App) checkFailCallBack(phost string) error {
-	log.GetLogger().Infof("%s health check callback {%s}", phost, self.cfg.Parents_config_path)
+//----------------------- 正向处理(容错处理) -----------------------//
+//服务出现不可用的情况
+func (self *App) forwardRecover(parentServer *ParentServer) {
+	log.GetLogger().Infof("%s >>>>>>>> forward recover", parentServer.Host)
+	defer func() {
+		parentServer.MarkDown = true //markdown处理
+	}()
 
-	buf, err := ioutil.ReadFile(self.cfg.Parents_config_path)
-	if err != nil {
-		return err
+	if !parentServer.MarkDown {
+		self.updateParentConfig()
+		//全部上层节点已经不可用
+		if self.parentIsProxy && len(self.getNotWorkingParentsHosts()) == len(self.GetParentsHosts()) {
+			self.forwardRecordsConfig()
+			self.forwardRemapConfig()
+			self.parentIsProxy = false //关闭父代理功能
+		}
+		self.reloadConfig()
 	}
-
-	content := string(buf)
-
-	//替换
-	newContent := strings.Replace(content, phost+";", "", 100)
-	newContent = strings.Replace(newContent, phost, "", 100)
-
-	//重新写入
-	err = ioutil.WriteFile(self.cfg.Parents_config_path, []byte(newContent), 0777)
-	if err != nil {
-		return err
-	}
-	delete(CURRENT_PARENTS, phost)
-	return nil
 }
 
-func (self *App) recoverRemap() {
-
-	//备份原文件
-	remap_file := self.cfg.Remap_config_path
-	bf := util.BackupFile(remap_file)
-
-	if bf == "" {
-		log.GetLogger().Errorf("backup fail: %s", bf)
-	}
-
-	//替换文件
-	dir := filepath.Dir(self.cfg.filepath)
-	targetFile := filepath.Join(dir, "remap.config")
-	cmd := fmt.Sprintf("cp -r %s %s", targetFile, bf)
+//records.config 关闭parent proxy功能
+func (self *App) forwardRecordsConfig() {
+	field := "0"
+	testCmd := `sed -i 's/CONFIG[ ][ ]*proxy.config.http.parent_proxy_routing_enable[ ][ ]*INT[ ][ ]*.*/CONFIG proxy.config.http.parent_proxy_routing_enable INT %s/g' %s`
+	cmd := fmt.Sprintf(testCmd, field, self.cfg.Records_config_path)
+	log.GetLogger().Infof("update forward records config command: %s", cmd)
 	util.ShellRun(cmd)
 }
 
-func reload() error {
-	cmd := "sudo sh /apps/sh/ats.sh reload"
-	res, err := util.String(cmd)
-	log.GetLogger().Infof("reload cmd : %s", cmd)
-
-	if err != nil {
-		log.GetLogger().Errorf("reload error: %s", err.Error())
-		return err
+//remap.config 配置访问源站
+func (self *App) forwardRemapConfig() {
+	//备份原文件
+	bf := util.BackupFile(self.cfg.Remap_config_path)
+	if bf != "" {
+		log.GetLogger().Info("备份remap成功")
+		//替换文件
+		dir := filepath.Dir(self.cfg.filepath)
+		sourceFile := filepath.Join(dir, "remap_parent.config")
+		cmd := fmt.Sprintf("cp  %s %s", sourceFile, self.cfg.Remap_config_path)
+		util.ShellRun(cmd)
 	}
-	log.GetLogger().Infof("reload result : %s", res)
-	return nil
 }
 
+//----------------------- 反向处理(恢复处理) -----------------------//
+
+//服务恢复正常的情况
+func (self *App) backwardRecover(parentServer *ParentServer) {
+	log.GetLogger().Infof("%s backward recover", parentServer.Host)
+	self.Lock()
+	defer func() {
+		parentServer.MarkDown = false //markdown处理
+		self.Unlock()
+	}()
+
+	if parentServer.MarkDown {
+		self.updateParentConfig()
+
+		//之前的状态是回源站
+		if !self.parentIsProxy {
+			self.backwardRemapConfig()
+			self.backwardRecordsConfig()
+			self.parentIsProxy = true
+		}
+		self.reloadConfig()
+	}
+
+}
+
+//records.config 关闭parent proxy功能
+func (self *App) backwardRecordsConfig() {
+	field := "1"
+	testCmd := `sed -i 's/CONFIG[ ][ ]*proxy.config.http.parent_proxy_routing_enable[ ][ ]*INT[ ][ ]*.*/CONFIG proxy.config.http.parent_proxy_routing_enable INT %s/g' %s`
+	cmd := fmt.Sprintf(testCmd, field, self.cfg.Records_config_path)
+	util.ShellRun(cmd)
+}
+
+func (self *App) backwardRemapConfig() {
+	dir := filepath.Dir(self.cfg.filepath)
+	sourceFile := filepath.Join(dir, "remap_edge.config")
+	cmd := fmt.Sprintf("cp  %s %s", sourceFile, self.cfg.Remap_config_path)
+	util.ShellRun(cmd)
+}
+
+//----------------------- 公共方法 -----------------------//
+
 //重试函数
-func retry(attempts int, sleep time.Duration, f func() error) error {
+func httpRetry(attempts int, sleep time.Duration, f func() error) error {
 	if err := f(); err != nil {
 		if attempts--; attempts > 0 {
 			time.Sleep(sleep)
-			log.GetLogger().Infoln("try to make connection with parent")
-			return retry(attempts, sleep, f)
+			log.GetLogger().Infoln("上层节点连接重试")
+			return httpRetry(attempts, sleep, f)
 		}
-		log.GetLogger().Infof("retry finish")
+		log.GetLogger().Infof("重试终止，上层节点不可用")
 		return err
 	}
 	return nil
+}
+
+//更新parent.config信息
+func (self *App) updateParentConfig() {
+	pws := strings.Join(self.getWorkingParentsHosts(), ";")
+
+	testCmd := `sed -i 's/[^#].*parent=".*/dest_domain=. method=get  parent="%s" round_robin=consistent_hash/g' %s`
+	cmd := fmt.Sprintf(testCmd, pws, self.cfg.Parents_config_path)
+	log.GetLogger().Infof("update parent config command: %s", cmd)
+	util.ShellRun(cmd)
+}
+
+//更新父节点信息
+func (self *App) updateParent(phost string, working bool) {
+	self.Lock()
+	defer self.Unlock()
+	if p, ok := self.parents[phost]; ok {
+		p.Working = working
+		self.parents[phost] = p
+	} else {
+		np := &ParentServer{}
+		np.Host = phost
+		np.Working = working
+		self.parents[phost] = np
+	}
+}
+
+//获取所有上层节点列表
+func (self *App) GetParentsHosts() []string {
+	contents := []string{}
+	for _, ps := range self.parents {
+		contents = append(contents, ps.Host)
+	}
+	return contents
+}
+
+//获取正常工作的上层节点列表
+func (self *App) getWorkingParentsHosts() []string {
+	self.Lock()
+	defer self.Unlock()
+	contents := []string{}
+	for _, ps := range self.parents {
+		if ps.Working {
+			contents = append(contents, ps.Host)
+		}
+	}
+	return contents
+}
+
+//获取挂掉的工作的上层节点列表
+func (self *App) getNotWorkingParentsHosts() []string {
+	self.Lock()
+	defer self.Unlock()
+	contents := []string{}
+	for _, ps := range self.parents {
+		if !ps.Working {
+			contents = append(contents, ps.Host)
+		}
+	}
+	return contents
+}
+
+func (self *App) reloadConfig() {
+	cmd := "sh /apps/sh/ats.sh reload"
+	res, err := util.String(cmd)
+	if err != nil {
+		log.GetLogger().Error(err)
+	}
+	log.GetLogger().Infof("reload result: %s", res)
 }
 
 //停止服务
 func (self *App) Shutdown(i interface{}) {
-	println()
-	log.GetLogger().Infoln("application ready to stop")
 	close(self.exitChan)
-	log.GetLogger().Infoln("application shutdown !!!")
+	log.GetLogger().Infoln("应用服务关闭!!!")
 }

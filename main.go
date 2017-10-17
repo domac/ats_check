@@ -28,16 +28,19 @@ func main() {
 		return
 	}
 
+	//构建应用上下文
 	application := app.NewApp(cfg, *log_path)
 
+	//应用服务启动
 	if err := application.Startup(); err != nil {
 		l.Fatal(err)
 		return
 	}
-
 	addr := fmt.Sprintf("localhost:%s", *port)
 	log.GetLogger().Infof("ats_check 服务 http://%s/ats/parents", addr)
-	httpServer, err := web.InitServer(addr)
+
+	//开启 api 服务
+	httpServer, err := web.InitServer(application, addr)
 	if err != nil {
 		log.GetLogger().Error(err)
 		return

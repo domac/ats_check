@@ -4,8 +4,9 @@ import (
 	"github.com/domac/ats_check/app"
 )
 
-//cache api handler
+//Apache Traffic Server Handler
 type ATSHandler struct {
+	applicationContext *app.App
 }
 
 func NewATSHandler(f func(ctx *Context)) BaseHandler {
@@ -16,7 +17,7 @@ func NewATSHandler(f func(ctx *Context)) BaseHandler {
 
 func (self *ATSHandler) Parents(ctx *Context) {
 	content := ""
-	for k, _ := range app.CURRENT_PARENTS {
+	for _, k := range self.applicationContext.GetParentsHosts() {
 		content += k + "\n"
 	}
 	ctx.W.Write([]byte(content))

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 
 APPLICATION=ats_check
-LOG_PATH_FILE=/apps/logs/ats_check/ats_check.log
 
 start(){
-	nohup ${APPLICATION_PATH}${APPLICATION} --config=${APPLICATION_PATH}config/base.conf  2>&1 &
+	nohup ./${APPLICATION} --config=${APPLICATION_PATH}config/base.conf  2>&1 &
 	sleep 2
 	ps aux|grep ${APPLICATION}|grep base.conf|grep -v grep
-	tail -n 18 ${LOG_PATH_FILE}
 }
 
 stop(){
@@ -44,5 +42,5 @@ case $1 in
 	;;
 	
 	*)
-		echo "Usage:{start|stop|restart|status}"
+	echo "Usage:{start|stop|restart|status}"
 esac

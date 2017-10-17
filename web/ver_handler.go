@@ -4,7 +4,7 @@ import (
 	"github.com/domac/ats_check/app"
 )
 
-//cache api handler
+//版本API
 type VerHandler struct {
 }
 

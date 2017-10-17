@@ -3,14 +3,14 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/domac/ats_check/app"
 	"net/http"
 	"strings"
 	"time"
 )
 
-//init the server with ip:port
-func InitServer(addr string) (*http.Server, error) {
-	r, err := loadRouter()
+func InitServer(application *app.App, addr string) (*http.Server, error) {
+	r, err := loadRouter(application)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,6 @@ func newContext(w http.ResponseWriter, r *http.Request) *Context {
 	}
 }
 
-//callback function invoked by context which happen after request
 func (ctx *Context) AddCallBack(f func()) {
 	ctx.callbacks = append(ctx.callbacks, f)
 }
@@ -53,7 +52,6 @@ func (ctx *Context) Done() {
 	}
 }
 
-//web api base class
 type BaseHandler struct {
 	Ctx    map[string]interface{}
 	Handle func(ctx *Context)
@@ -84,12 +82,10 @@ func getStringVal(n string, r *http.Request) string {
 	return strings.TrimSpace(r.FormValue(n))
 }
 
-//reponse data using Json
 func reponseJson(w http.ResponseWriter, data interface{}) {
 	reponseJsonWithStatusCode(w, http.StatusOK, data)
 }
 
-//reponse data using Json + statusCode
 func reponseJsonWithStatusCode(w http.ResponseWriter, httpCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	s := ""
@@ -104,7 +100,6 @@ func reponseJsonWithStatusCode(w http.ResponseWriter, httpCode int, data interfa
 	fmt.Fprint(w, s)
 }
 
-//reponse data using PlainText
 func reponsePlainText(w http.ResponseWriter, data string) {
 	w.Header().Set("Content-Type", "text/plain")
 	fmt.Fprint(w, data)

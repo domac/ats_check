@@ -17,6 +17,8 @@ var (
 	Events = make(map[string][]func(interface{}), 2)
 )
 
+// ------------  事件管理 ---------------
+
 func On(name string, fs ...func(interface{})) error {
 	evs, ok := Events[name]
 	if !ok {
