@@ -9,6 +9,7 @@ import (
 
 type AppConfig struct {
 	Parents                  []string
+	Haproxys                 []string
 	Parents_config_path      string
 	Remap_config_path        string
 	Records_config_path      string
@@ -19,6 +20,7 @@ type AppConfig struct {
 	filepath                 string
 	Setup_records_config_cmd string
 	Setup_parent_config_cmd  string
+	Is_parent                int
 }
 
 //载入配置文件

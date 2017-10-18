@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/domac/ats_check/log"
 	"github.com/domac/ats_check/util"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,18 @@ type ParentServer struct {
 	MarkDown bool
 }
 
+//HaProxy节点结构
+type HaProxyServer struct {
+	Host     string
+	Working  bool
+	MarkDown bool
+}
+
 type App struct {
 	exitChan chan int
 	cfg      *AppConfig
 	parents  map[string]*ParentServer
+	haproxys map[string]*HaProxyServer
 	sync.Mutex
 	parentIsProxy bool
 }
@@ -41,6 +50,7 @@ func NewApp(cfg *AppConfig, log_path string) *App {
 		cfg:           cfg,
 		exitChan:      make(chan int),
 		parents:       make(map[string]*ParentServer),
+		haproxys:      make(map[string]*HaProxyServer),
 		parentIsProxy: true,
 	}
 	return a
@@ -49,23 +59,56 @@ func NewApp(cfg *AppConfig, log_path string) *App {
 //应用启动
 //上层节点检测
 func (self *App) Startup() (err error) {
-
 	log.GetLogger().Infoln("服务初始化")
-
 	parent_config := self.cfg.Parents_config_path
 	parents := self.cfg.Parents
+	haproxys := self.cfg.Haproxys
 
 	log.GetLogger().Infof("上层节点的ATS配置文件:%s", parent_config)
-
 	//父节点信息不存在, 则退出
 	if len(parents) == 0 {
 		log.GetLogger().Errorln("上层结构不存在，请检查配置文件是否填写!")
 		self.Shutdown(nil)
 		os.Exit(2)
 	}
-	for _, phost := range parents {
-		go self.parentHealthCheck(phost)
+
+	if self.cfg.Is_parent == 1 {
+		//parent节点模式
+		for _, hhost := range haproxys {
+			go self.haproxyHealthCheck(hhost)
+		}
+	} else {
+		//边缘节点模式
+		for _, phost := range parents {
+			go self.parentHealthCheck(phost)
+		}
 	}
+	return
+}
+
+//Haproxy节点的监控检测
+func (self *App) haproxyHealthCheck(hhost string) {
+	log.GetLogger().Infof("Haproxy节点健康检查开始 : %s", hhost)
+	//调度定时器
+	ticker := time.Tick(time.Duration(self.cfg.Check_duration_second) * time.Second)
+	for {
+		select {
+		case <-ticker:
+			//主体测试功能
+			log.GetLogger().Infof("HA定时健康监测 => %s", hhost)
+			err := retry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond,
+				func() error {
+					return self.tcpPortCheck(hhost, 80)
+				})
+			self.updateHaproxy(hhost, err == nil)
+			//HA故障恢复
+			self.haFailover(hhost)
+		case <-self.exitChan:
+			goto exit
+		}
+	}
+exit:
+	log.GetLogger().Infof("HA %s 健康监测功能退出", hhost)
 	return
 }
 
@@ -90,10 +133,9 @@ func (self *App) parentHealthCheck(phost string) {
 				log.GetLogger().Infoln("重建httpclient")
 				httpclient = util.NewFastHttpClient(500 * time.Millisecond)
 			}
-
 			//主体测试功能
 			log.GetLogger().Infof("定时健康监测 -> %s", phost)
-			err := httpRetry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond, func() error {
+			err := retry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond, func() error {
 				statusCode, body, err := httpclient.Get(nil, health_check_url)
 				body = body[:0] //清空body
 				if err != nil {
@@ -105,9 +147,7 @@ func (self *App) parentHealthCheck(phost string) {
 				}
 				return nil
 			})
-
 			self.updateParent(phost, err == nil)
-
 			//故障恢复
 			self.failover(phost)
 
@@ -120,27 +160,51 @@ exit:
 	return
 }
 
+//故障处理：Ha配置
+func (self *App) haFailover(hhost string) {
+	if haServer, ok := self.haproxys[hhost]; ok {
+		if !haServer.Working {
+			self.forwardHaproxyRecover(haServer)
+		} else {
+			haServer.MarkDown = false
+		}
+	}
+}
+
 //故障处理
 func (self *App) failover(phost string) {
 	if parentServer, ok := self.parents[phost]; ok {
-		if parentServer.MarkDown && parentServer.Working {
-			//服务恢复正常的情况
-			self.backwardRecover(parentServer)
-		} else if !parentServer.MarkDown && !parentServer.Working {
-			//服务出现不可用的情况
-			self.forwardRecover(parentServer)
-		}
-
-		// if !parentServer.Working {
+		// if parentServer.MarkDown && parentServer.Working {
+		// 	//服务恢复正常的情况
+		// 	//self.backwardRecover(parentServer)
+		// } else if !parentServer.MarkDown && !parentServer.Working {
+		// 	//服务出现不可用的情况
 		// 	self.forwardRecover(parentServer)
-		// } else {
-		// 	self.parentIsProxy = true
-		// 	parentServer.MarkDown = false
 		// }
+
+		if !parentServer.Working {
+			self.forwardRecover(parentServer)
+		} else {
+			self.parentIsProxy = true
+			parentServer.MarkDown = false
+		}
 	}
 }
 
 //----------------------- 正向处理(容错处理) -----------------------//
+
+func (self *App) forwardHaproxyRecover(haproxyServer *HaProxyServer) {
+	log.GetLogger().Infof("%s >>>>>>>> forward Haproxy recover", haproxyServer.Host)
+	defer func() {
+		haproxyServer.MarkDown = true //markdown处理
+	}()
+
+	if !haproxyServer.MarkDown {
+		self.updateRemapHaproxyConfig(haproxyServer.Host)
+		self.reloadConfig()
+	}
+}
+
 //服务出现不可用的情况
 func (self *App) forwardRecover(parentServer *ParentServer) {
 	log.GetLogger().Infof("%s >>>>>>>> forward recover", parentServer.Host)
@@ -201,7 +265,6 @@ func (self *App) backwardRecover(parentServer *ParentServer) {
 		if !self.parentIsProxy {
 			self.backwardRemapConfig()
 			self.backwardRecordsConfig()
-			self.parentIsProxy = true
 		}
 		self.reloadConfig()
 	}
@@ -211,6 +274,7 @@ func (self *App) backwardRecover(parentServer *ParentServer) {
 //records.config 关闭parent proxy功能
 func (self *App) backwardRecordsConfig() {
 	field := "1"
+	//cmd := strings.Replace(self.cfg.Setup_records_config_cmd, "{PARENTS_ENBALE}", field, 1)
 	testCmd := `sed -i 's/CONFIG[ ][ ]*proxy.config.http.parent_proxy_routing_enable[ ][ ]*INT[ ][ ]*.*/CONFIG proxy.config.http.parent_proxy_routing_enable INT %s/g' %s`
 	cmd := fmt.Sprintf(testCmd, field, self.cfg.Records_config_path)
 	util.ShellRun(cmd)
@@ -226,23 +290,45 @@ func (self *App) backwardRemapConfig() {
 //----------------------- 公共方法 -----------------------//
 
 //重试函数
-func httpRetry(attempts int, sleep time.Duration, f func() error) error {
+func retry(attempts int, sleep time.Duration, f func() error) error {
 	if err := f(); err != nil {
 		if attempts--; attempts > 0 {
 			time.Sleep(sleep)
-			log.GetLogger().Infoln("上层节点连接重试")
-			return httpRetry(attempts, sleep, f)
+			log.GetLogger().Infoln("节点连接重试")
+			return retry(attempts, sleep, f)
 		}
-		log.GetLogger().Infof("重试终止，上层节点不可用")
+		log.GetLogger().Infof("重试终止，节点不可用")
 		return err
 	}
 	return nil
 }
 
+//tcp检测
+func (self *App) tcpPortCheck(host string, port uint32) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		log.GetLogger().Errorf("tcp connect to %s fail !", host)
+		return err
+	}
+	defer conn.Close()
+	return nil
+}
+
+//更新remap.config信息
+func (self *App) updateRemapHaproxyConfig(hhost string) {
+	self.Lock()
+	defer self.Unlock()
+	log.GetLogger().Infof("update remap proxy config by host: ", hhost)
+	testCmd := `sed -i 's/@pparam=%s//g' %s`
+	cmd := fmt.Sprintf(testCmd, hhost, self.cfg.Remap_config_path)
+	log.GetLogger().Infof("update parent config command: %s", cmd)
+	util.ShellRun(cmd)
+}
+
 //更新parent.config信息
 func (self *App) updateParentConfig() {
 	pws := strings.Join(self.getWorkingParentsHosts(), ";")
-
 	testCmd := `sed -i 's/[^#].*parent=".*/dest_domain=. method=get  parent="%s" round_robin=consistent_hash/g' %s`
 	cmd := fmt.Sprintf(testCmd, pws, self.cfg.Parents_config_path)
 	log.GetLogger().Infof("update parent config command: %s", cmd)
@@ -264,11 +350,39 @@ func (self *App) updateParent(phost string, working bool) {
 	}
 }
 
+//更新Ha节点信息
+func (self *App) updateHaproxy(hhost string, working bool) {
+	self.Lock()
+	defer self.Unlock()
+	if p, ok := self.haproxys[hhost]; ok {
+		p.Working = working
+		self.haproxys[hhost] = p
+	} else {
+		np := &HaProxyServer{}
+		np.Host = hhost
+		np.Working = working
+		self.haproxys[hhost] = np
+	}
+}
+
 //获取所有上层节点列表
 func (self *App) GetParentsHosts() []string {
 	contents := []string{}
 	for _, ps := range self.parents {
 		contents = append(contents, ps.Host)
+	}
+	return contents
+}
+
+//获取正常工作的Ha节点列表
+func (self *App) getWorkingHaproxyHosts() []string {
+	self.Lock()
+	defer self.Unlock()
+	contents := []string{}
+	for _, hs := range self.haproxys {
+		if hs.Working {
+			contents = append(contents, hs.Host)
+		}
 	}
 	return contents
 }
