@@ -174,20 +174,20 @@ func (self *App) haFailover(hhost string) {
 //故障处理
 func (self *App) failover(phost string) {
 	if parentServer, ok := self.parents[phost]; ok {
-		// if parentServer.MarkDown && parentServer.Working {
-		// 	//服务恢复正常的情况
-		// 	//self.backwardRecover(parentServer)
-		// } else if !parentServer.MarkDown && !parentServer.Working {
-		// 	//服务出现不可用的情况
-		// 	self.forwardRecover(parentServer)
-		// }
-
-		if !parentServer.Working {
+		if parentServer.MarkDown && parentServer.Working {
+			//服务恢复正常的情况
+			self.backwardRecover(parentServer)
+		} else if !parentServer.MarkDown && !parentServer.Working {
+			//服务出现不可用的情况
 			self.forwardRecover(parentServer)
-		} else {
-			self.parentIsProxy = true
-			parentServer.MarkDown = false
 		}
+
+		// if !parentServer.Working {
+		// 	self.forwardRecover(parentServer)
+		// } else {
+		// 	self.parentIsProxy = true
+		// 	parentServer.MarkDown = false
+		// }
 	}
 }
 
@@ -265,6 +265,7 @@ func (self *App) backwardRecover(parentServer *ParentServer) {
 		if !self.parentIsProxy {
 			self.backwardRemapConfig()
 			self.backwardRecordsConfig()
+			self.parentIsProxy = true
 		}
 		self.reloadConfig()
 	}
