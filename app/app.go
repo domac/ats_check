@@ -39,6 +39,16 @@ type App struct {
 	parentIsProxy bool
 }
 
+func checkIsParent(parentIps []string, ip string) bool {
+
+	for _, pip := range parentIps {
+		if strings.Contains(pip, ip) {
+			return true
+		}
+	}
+	return false
+}
+
 //创建后台进程对象
 func NewApp(cfg *AppConfig, log_path string) *App {
 	dir := filepath.Dir(log_path)
@@ -46,6 +56,17 @@ func NewApp(cfg *AppConfig, log_path string) *App {
 	util.ShellRun("touch  " + log_path)
 	//初始化日志
 	log.LogInit(log_path, "info")
+
+	localIp := util.GetLocalIp()
+	log.GetLogger().Infof(">>>>> local ip is %s", localIp)
+
+	if localIp != "" {
+		if checkIsParent(cfg.Parents, localIp) {
+			log.GetLogger().Infoln("this node is a parent node")
+			cfg.Is_parent = 1
+		}
+	}
+
 	a := &App{
 		cfg:           cfg,
 		exitChan:      make(chan int),
@@ -53,6 +74,7 @@ func NewApp(cfg *AppConfig, log_path string) *App {
 		haproxys:      make(map[string]*HaProxyServer),
 		parentIsProxy: true,
 	}
+
 	return a
 }
 
@@ -80,7 +102,8 @@ func (self *App) Startup() (err error) {
 	} else {
 		//边缘节点模式
 		for _, phost := range parents {
-			go self.parentHealthCheck(phost)
+			//go self.parentHealthCheck(phost)
+			go self.parentHealthCheckByTcp(phost)
 		}
 	}
 	return
@@ -109,6 +132,34 @@ func (self *App) haproxyHealthCheck(hhost string) {
 	}
 exit:
 	log.GetLogger().Infof("HA %s 健康监测功能退出", hhost)
+	return
+}
+
+func (self *App) parentHealthCheckByTcp(phost string) {
+	//初始化上层节点状态
+	self.updateParent(phost, true)
+
+	log.GetLogger().Infof("中心节点健康检查(TCP): %s", phost)
+	//调度定时器
+	ticker := time.Tick(time.Duration(self.cfg.Check_duration_second) * time.Second)
+	for {
+		select {
+		case <-ticker:
+			//主体测试功能
+			log.GetLogger().Infof("定时健康监测(TCP) -> %s", phost)
+			err := retry(self.cfg.Retry, time.Duration(self.cfg.Retry_sleep_ms)*time.Millisecond,
+				func() error {
+					return self.tcpPortCheck(phost, 80)
+				})
+			self.updateParent(phost, err == nil)
+			//故障恢复
+			self.failover(phost)
+		case <-self.exitChan:
+			goto exit
+		}
+	}
+exit:
+	log.GetLogger().Infof("%s 健康监测(TCP)功能退出", phost)
 	return
 }
 
@@ -174,20 +225,20 @@ func (self *App) haFailover(hhost string) {
 //故障处理
 func (self *App) failover(phost string) {
 	if parentServer, ok := self.parents[phost]; ok {
-		if parentServer.MarkDown && parentServer.Working {
-			//服务恢复正常的情况
-			self.backwardRecover(parentServer)
-		} else if !parentServer.MarkDown && !parentServer.Working {
-			//服务出现不可用的情况
-			self.forwardRecover(parentServer)
-		}
-
-		// if !parentServer.Working {
+		// if parentServer.MarkDown && parentServer.Working {
+		// 	//服务恢复正常的情况
+		// 	//self.backwardRecover(parentServer)
+		// } else if !parentServer.MarkDown && !parentServer.Working {
+		// 	//服务出现不可用的情况
 		// 	self.forwardRecover(parentServer)
-		// } else {
-		// 	self.parentIsProxy = true
-		// 	parentServer.MarkDown = false
 		// }
+
+		if !parentServer.Working {
+			self.forwardRecover(parentServer)
+		} else {
+			self.parentIsProxy = true
+			parentServer.MarkDown = false
+		}
 	}
 }
 
@@ -242,7 +293,8 @@ func (self *App) forwardRemapConfig() {
 		//替换文件
 		dir := filepath.Dir(self.cfg.filepath)
 		sourceFile := filepath.Join(dir, "remap_parent.config")
-		cmd := fmt.Sprintf("cp  %s %s", sourceFile, self.cfg.Remap_config_path)
+		cmd := fmt.Sprintf("cp -r %s %s", sourceFile, self.cfg.Remap_config_path)
+		log.GetLogger().Info("forward cmd :", cmd)
 		util.ShellRun(cmd)
 	}
 }
@@ -265,7 +317,6 @@ func (self *App) backwardRecover(parentServer *ParentServer) {
 		if !self.parentIsProxy {
 			self.backwardRemapConfig()
 			self.backwardRecordsConfig()
-			self.parentIsProxy = true
 		}
 		self.reloadConfig()
 	}
@@ -309,7 +360,7 @@ func (self *App) tcpPortCheck(host string, port uint32) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
-		log.GetLogger().Errorf("tcp connect to %s fail !", host)
+		log.GetLogger().Errorf("tcp connect to %s fail !", addr)
 		return err
 	}
 	defer conn.Close()
@@ -415,7 +466,7 @@ func (self *App) getNotWorkingParentsHosts() []string {
 }
 
 func (self *App) reloadConfig() {
-	cmd := "sh /apps/sh/ats.sh reload"
+	cmd := "sudo sh /apps/sh/ats.sh reload"
 	res, err := util.String(cmd)
 	if err != nil {
 		log.GetLogger().Error(err)
