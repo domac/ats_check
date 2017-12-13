@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/domac/ats_check/log"
 	"github.com/domac/ats_check/util"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -380,6 +381,10 @@ func (self *App) updateRemapHaproxyConfig(hhost string) {
 
 //更新parent.config信息
 func (self *App) updateParentConfig() {
+	sleep1 := time.Duration(rand.Int63n(7)) * time.Second
+	time.Sleep(sleep1)
+	sleep2 := time.Duration(rand.Int63n(100)*10) * time.Millisecond
+	time.Sleep(sleep2)
 	pws := strings.Join(self.getWorkingParentsHosts(), ";")
 	testCmd := `sed -i 's/[^#].*parent=".*/dest_domain=. method=get  parent="%s" round_robin=consistent_hash/g' %s`
 	cmd := fmt.Sprintf(testCmd, pws, self.cfg.Parents_config_path)
@@ -445,6 +450,10 @@ func (self *App) getWorkingParentsHosts() []string {
 	defer self.Unlock()
 	contents := []string{}
 	for _, ps := range self.parents {
+		ph := ps.Host
+		if !strings.Contains(ph, ":80") {
+			ph = ph + ":80"
+		}
 		if ps.Working {
 			contents = append(contents, ps.Host)
 		}
